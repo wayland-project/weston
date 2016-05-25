@@ -42,7 +42,8 @@ static FILE *weston_logfile = NULL;
 
 static int cached_tm_mday = -1;
 
-static int weston_log_timestamp(void)
+static int
+weston_log_timestamp(void)
 {
 	struct timeval tv;
 	struct tm *brokendown_time;
