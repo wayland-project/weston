@@ -3673,7 +3673,7 @@ weston_surface_get_bounding_box(struct weston_surface *surface)
  * The rectangle defined by src_x, src_y, width, height must fit in
  * the surface contents. Otherwise an error is returned.
  *
- * Use surface_get_data_size to determine the content size; the
+ * Use weston_surface_get_content_size to determine the content size; the
  * needed target buffer size and rectangle limits.
  *
  * CURRENT IMPLEMENTATION RESTRICTIONS:
