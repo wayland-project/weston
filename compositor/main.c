@@ -560,6 +560,16 @@ static int on_term_signal(int signal_number, void *data)
 	return 1;
 }
 
+static void
+block_signal( int signal_number )
+{
+	sigset_t ss;
+
+	sigemptyset( &ss );
+	sigaddset( &ss, signal_number );
+	pthread_sigmask( SIG_BLOCK, &ss, NULL );
+}
+
 static const char *
 clock_name(clockid_t clk_id)
 {
@@ -1942,6 +1952,17 @@ int main(int argc, char *argv[])
 	weston_config_section_get_bool(section, "require-input",
 				       &require_input, true);
 	wet.compositor->require_input = require_input;
+
+	/*
+	 * Block sigusr1 in case xwayland is to be loaded. That way,
+	 * any thread called by an external library or within the
+	 * compositor does not terminate the entire session.
+	 */
+	if (!xwayland)
+		weston_config_section_get_bool(section, "xwayland", &xwayland,
+					       false);
+	if ( xwayland )
+		block_signal( SIGUSR1 );
 
 	if (load_backend(wet.compositor, backend, &argc, argv, config) < 0) {
 		weston_log("fatal: failed to create compositor backend\n");

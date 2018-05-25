@@ -28,6 +28,8 @@
 
 #include <signal.h>
 #include <sys/socket.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include "compositor.h"
 #include "compositor/weston.h"
@@ -45,17 +47,43 @@ struct wet_xwayland {
 };
 
 static int
-handle_sigusr1(int signal_number, void *data)
+handle_sigusr1(int fd, unsigned int mask, void *data)
 {
 	struct wet_xwayland *wxw = data;
+	pid_t pid;
 
-	/* We'd be safer if we actually had the struct
-	 * signalfd_siginfo from the signalfd data and could verify
-	 * this came from Xwayland.*/
-	wxw->api->xserver_loaded(wxw->xwayland, wxw->client, wxw->wm_fd);
-	wl_event_source_remove(wxw->sigusr1_source);
+	if ( read(fd, &(pid), sizeof(pid_t)) == sizeof(pid_t)
+             && wxw->process.pid == pid ) {
+		wxw->api->xserver_loaded(wxw->xwayland, wxw->client, wxw->wm_fd);
+		wl_event_source_remove( wxw->sigusr1_source );
+		close( fd );
+	}
 
 	return 1;
+}
+
+static void*
+recieve_sigusr1(void *data) {
+	struct wet_xwayland *wxw = *((struct wet_xwayland **)data + 1);
+	int fd = *((int *)data);
+	sigset_t ss;
+	siginfo_t si;
+
+	free(data);
+	data = NULL;
+
+	sigemptyset( &ss );
+	sigaddset( &ss, SIGUSR1 );
+
+	do {
+		sigwaitinfo( &ss, &si );
+	} while( wxw->process.pid != si.si_pid );
+
+	while ( write( fd, &(si.si_pid), sizeof(pid_t) ) != sizeof(pid_t) );
+
+	close( fd );
+
+	pthread_exit(NULL);
 }
 
 static pid_t
@@ -174,6 +202,9 @@ wet_load_xwayland(struct weston_compositor *comp)
 	struct weston_xwayland *xwayland;
 	struct wet_xwayland *wxw;
 	struct wl_event_loop *loop;
+	pthread_t sig_reciever;
+	int sigusr1_fifo[2];
+	void *sigusr1_data;
 
 	if (weston_compositor_load_xwayland(comp) < 0)
 		return -1;
@@ -201,9 +232,33 @@ wet_load_xwayland(struct weston_compositor *comp)
 	if (api->listen(xwayland, wxw, spawn_xserver) < 0)
 		return -1;
 
-	loop = wl_display_get_event_loop(comp->wl_display);
-	wxw->sigusr1_source = wl_event_loop_add_signal(loop, SIGUSR1,
-						       handle_sigusr1, wxw);
+	if ( (sigusr1_data = malloc( 2 * sizeof(void *) )) == NULL )
+		return -1;
+
+	loop = wl_display_get_event_loop(wxw->compositor->wl_display);
+
+	if ( pipe(sigusr1_fifo) != 0 ) {
+		free(sigusr1_data);
+		return -1;
+	}
+
+	wxw->sigusr1_source = wl_event_loop_add_fd(loop, sigusr1_fifo[0],
+                                                   WL_EVENT_READABLE,
+                                                   handle_sigusr1, wxw);
+
+	*((int *) sigusr1_data) = sigusr1_fifo[1];
+	*((struct wet_xwayland **) sigusr1_data + 1) = wxw;
+	if ( pthread_create(&sig_reciever, NULL, recieve_sigusr1, sigusr1_data) != 0 )
+	{
+		weston_log("Failed to spawn xwayland signal reciever.\n");
+		free( sigusr1_data );
+		sigusr1_data = NULL;
+		close(sigusr1_fifo[0]);
+		close(sigusr1_fifo[1]);
+		wl_event_source_remove( wxw->sigusr1_source );
+	}
+	else
+		pthread_detach( sig_reciever );
 
 	return 0;
 }

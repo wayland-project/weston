@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #include <pthread.h>
 
@@ -900,6 +901,12 @@ vpp_destroy(struct vaapi_recorder *r)
 static int
 setup_worker_thread(struct vaapi_recorder *r)
 {
+	sigset_t ss;
+
+	sigemptyset(&ss);
+	sigaddset(&ss, SIGUSR1);
+	pthread_sigmask(SIG_BLOCK, &ss, NULL);
+
 	pthread_mutex_init(&r->mutex, NULL);
 	pthread_cond_init(&r->input_cond, NULL);
 	pthread_create(&r->worker_thread, NULL, worker_thread_function, r);
