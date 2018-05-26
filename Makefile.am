@@ -183,7 +183,7 @@ weston_LDADD = libshared.la libweston-@LIBWESTON_MAJOR@.la \
 	$(COMPOSITOR_LIBS) \
 	$(DL_LIBS) $(LIBINPUT_BACKEND_LIBS) \
 	$(CLOCK_GETRES_LIBS) \
-	-lm
+	-lm -lpthread
 
 weston_SOURCES = 					\
 	compositor/main.c				\
