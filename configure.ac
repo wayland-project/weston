@@ -264,10 +264,17 @@ if test x$enable_rdp_compositor = xyes; then
     [],
     [PKG_CHECK_MODULES(RDP_COMPOSITOR, [freerdp >= 1.1.0],[])]
   )
-
   SAVED_CPPFLAGS="$CPPFLAGS"
   CPPFLAGS="$CPPFLAGS $RDP_COMPOSITOR_CFLAGS"
+
   AC_CHECK_HEADERS([freerdp/version.h])
+  AC_CHECK_MEMBER([SURFACE_BITS_COMMAND.bmp],
+	[AC_DEFINE([HAVE_SURFACE_BITS_BMP], [1], [SURFACE_BITS_CMD has bmp field])],
+	[],
+	[[#include <freerdp/update.h>]]
+  )
+
+
   CPPFLAGS="$SAVED_CPPFLAGS"
 fi
 
@@ -393,11 +400,14 @@ if ! test "x$enable_simple_dmabuf_drm_client" = "xno"; then
   PKG_CHECK_MODULES(LIBDRM_PLATFORM_INTEL, [libdrm_intel],
       AC_DEFINE([HAVE_LIBDRM_INTEL], [1], [Build intel dmabuf client]) have_simple_dmabuf_drm_client=yes,
       [true])
+  PKG_CHECK_MODULES(LIBDRM_PLATFORM_ETNAVIV, [libdrm_etnaviv],
+      AC_DEFINE([HAVE_LIBDRM_ETNAVIV], [1], [Build etnaviv dmabuf client]) have_simple_dmabuf_drm_client=yes,
+      [true])
 
   if test "x$have_simple_dmabuf_drm_client" != "xyes" -o \
 	  "x$have_simple_dmabuf_libs" = "xno" && \
      test "x$enable_simple_dmabuf_drm_client" = "xyes"; then
-    AC_MSG_ERROR([DRM dmabuf client explicitly enabled, but libdrm_intel or libdrm_freedreno not found])
+    AC_MSG_ERROR([DRM dmabuf client explicitly enabled, but none of libdrm_{intel,freedreno,etnaviv} found])
   fi
 
   if test "x$have_simple_dmabuf_drm_client" = "xyes" -a "x$have_simple_dmabuf_libs" = "xyes"; then

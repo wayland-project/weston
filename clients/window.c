@@ -286,6 +286,7 @@ struct window {
 	confined_pointer_unconfined_handler_t pointer_unconfined_handler;
 
 	struct zwp_confined_pointer_v1 *confined_pointer;
+	struct input *confined_input;
 	struct widget *confined_widget;
 	bool confined;
 
@@ -4788,8 +4789,8 @@ static void
 locked_pointer_locked(void *data,
 		      struct zwp_locked_pointer_v1 *locked_pointer)
 {
-	struct input *input = data;
-	struct window *window = input->pointer_focus;
+	struct window *window = data;
+	struct input *input = window->locked_input;
 
 	window->pointer_locked = true;
 
@@ -4804,8 +4805,8 @@ static void
 locked_pointer_unlocked(void *data,
 			struct zwp_locked_pointer_v1 *locked_pointer)
 {
-	struct input *input = data;
-	struct window *window = input->pointer_focus;
+	struct window *window = data;
+	struct input *input = window->locked_input;
 
 	window_unlock_pointer(window);
 
@@ -4860,7 +4861,7 @@ window_lock_pointer(struct window *window, struct input *input)
 							ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
 	zwp_locked_pointer_v1_add_listener(locked_pointer,
 					   &locked_pointer_listener,
-					   input);
+					   window);
 
 	window->locked_input = input;
 	window->locked_pointer = locked_pointer;
@@ -4902,8 +4903,8 @@ static void
 confined_pointer_confined(void *data,
 			  struct zwp_confined_pointer_v1 *confined_pointer)
 {
-	struct input *input = data;
-	struct window *window = input->pointer_focus;
+	struct window *window = data;
+	struct input *input = window->confined_input;
 
 	window->confined = true;
 
@@ -4918,8 +4919,8 @@ static void
 confined_pointer_unconfined(void *data,
 			    struct zwp_confined_pointer_v1 *confined_pointer)
 {
-	struct input *input = data;
-	struct window *window = input->pointer_focus;
+	struct window *window = data;
+	struct input *input = window->confined_input;
 
 	window_unconfine_pointer(window);
 
@@ -4984,8 +4985,9 @@ window_confine_pointer_to_rectangles(struct window *window,
 
 	zwp_confined_pointer_v1_add_listener(confined_pointer,
 					     &confined_pointer_listener,
-					     input);
+					     window);
 
+	window->confined_input = input;
 	window->confined_pointer = confined_pointer;
 	window->confined_widget = NULL;
 
@@ -5046,6 +5048,7 @@ window_unconfine_pointer(struct window *window)
 	zwp_confined_pointer_v1_destroy(window->confined_pointer);
 	window->confined_pointer = NULL;
 	window->confined = false;
+	window->confined_input = NULL;
 }
 
 static void

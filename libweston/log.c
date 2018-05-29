@@ -36,8 +36,28 @@
 
 #include "compositor.h"
 
-static log_func_t log_handler = 0;
-static log_func_t log_continue_handler = 0;
+static int
+default_log_handler(const char *fmt, va_list ap);
+
+static log_func_t log_handler = default_log_handler;
+static log_func_t log_continue_handler = default_log_handler;
+
+/** Sentinel log message handler
+ *
+ * This function is used as the default handler for log messages. It
+ * exists only to issue a noisy reminder to the user that a real handler
+ * must be installed prior to issuing logging calls. The process is
+ * immediately aborted after the reminder is printed.
+ *
+ * \param fmt The format string. Ignored.
+ * \param va The variadic argument list. Ignored.
+ */
+static int
+default_log_handler(const char *fmt, va_list ap)
+{
+        fprintf(stderr, "weston_log_set_handler() must be called before using of weston_log().\n");
+        abort();
+}
 
 /** Install the log handler
  *
