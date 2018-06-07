@@ -14,7 +14,7 @@ IVI-shell contains two main features:
   to develop own shell, linking Common layout library.
   For the time being, the library refers Genivi ilm interface.
 
-  http://projects.genivi.org/wayland-ivi-extension/
+  https://at.projects.genivi.org/wiki/display/WIE/Wayland+IVI+Extension+Home
 
 - Extension protocol; ivi-application to tie wl_surface and a given ID.
   With this ID, shell can identify which wl_surface is drawn by which
@@ -37,7 +37,7 @@ The actual software components delivered with Weston are:
 - ivi-layout.so:
 	Implements the IVI window management concepts: Screen, Layer,
 	Surface, groups of Layers, groups of Surfaces, see:
-	http://projects.genivi.org/ivi-layer-management/node/13
+	https://at.projects.genivi.org/wiki/display/WIE/Summary+of+Layer+manager+APIs
 	Offers a stable API for writing IVI-controller modules like
 	hmi-controller.so against the IVI concepts. In other words,
 	it offers an API to write IVI window manager modules.
@@ -49,8 +49,7 @@ The actual software components delivered with Weston are:
 	This implementation keeps all window management inside the module,
 	while IVI-systems may use another module that exposes all window
 	management via Wayland or other protocol for an external process
-	to control:
-	http://git.projects.genivi.org/?p=wayland-ivi-extension.git;a=summary
+	to control
 
 - ivi-hmi-controller.xml:
 	Wayland protocol extension for IVI display control; the private
