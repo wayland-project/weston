@@ -8,8 +8,8 @@ if get_option('shell-desktop')
 		'../shared/matrix.c',
 		weston_desktop_shell_server_protocol_h,
 		weston_desktop_shell_protocol_c,
-		input_method_unstable_v1_server_protocol_h,
-		input_method_unstable_v1_protocol_c,
+		weston_input_panel_server_protocol_h,
+		weston_input_panel_protocol_c,
 	]
 	deps_shell_desktop = [
 		dep_libshared,

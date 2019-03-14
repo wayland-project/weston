@@ -1,6 +1,7 @@
 /*
  * Copyright © 2012 Openismus GmbH
  * Copyright © 2012 Intel Corporation
+ * Copyright © 2019 Collabora Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -34,29 +35,39 @@
 #include <cairo.h>
 
 #include "window.h"
-#include "input-method-unstable-v1-client-protocol.h"
-#include "text-input-unstable-v1-client-protocol.h"
+#include "input-method-unstable-v2-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
+#include "virtual-keyboard-unstable-v1-client-protocol.h"
+#include "weston-input-panel-client-protocol.h"
 #include "shared/xalloc.h"
 
 struct keyboard;
 
-struct virtual_keyboard {
-	struct zwp_input_panel_v1 *input_panel;
-	struct zwp_input_method_v1 *input_method;
-	struct zwp_input_method_context_v1 *context;
-	struct display *display;
-	struct output *output;
-	char *preedit_string;
-	uint32_t preedit_style;
-	struct {
-		xkb_mod_mask_t shift_mask;
-	} keysym;
-	uint32_t serial;
+struct text_input_state {
 	uint32_t content_hint;
 	uint32_t content_purpose;
-	char *preferred_language;
+	uint32_t change_cause;
 	char *surrounding_text;
 	uint32_t surrounding_cursor;
+	bool active;
+};
+
+struct virtual_keyboard {
+	struct weston_input_panel *input_panel;
+	struct zwp_input_method_manager_v2 *input_method_manager;
+	struct zwp_input_method_v2 *input_method;
+	struct zwp_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
+	struct zwp_virtual_keyboard_v1 *virtual_keyboard;
+	struct display *display;
+	struct output *output;
+	struct wl_seat *seat;
+
+	uint32_t serial;
+	char *preedit_string;
+	struct text_input_state pending;
+	struct text_input_state current;
+	// TODO - add support to change language (e.g. via config)
+	char *preferred_language;
 	struct keyboard *keyboard;
 	bool toplevel;
 };
@@ -73,7 +84,6 @@ enum key_type {
 	keytype_arrow_left,
 	keytype_arrow_right,
 	keytype_arrow_down,
-	keytype_style
 };
 
 struct key {
@@ -94,7 +104,6 @@ struct layout {
 	uint32_t rows;
 
 	const char *language;
-	uint32_t text_direction;
 };
 
 static const struct key normal_keys[] = {
@@ -140,7 +149,6 @@ static const struct key normal_keys[] = {
 	{ keytype_arrow_left, "<", "<", "<", 1},
 	{ keytype_arrow_right, ">", ">", ">", 1},
 	{ keytype_arrow_down, "\\/", "\\/", "\\/", 1},
-	{ keytype_style, "", "", "", 2}
 };
 
 static const struct key numeric_keys[] = {
@@ -162,7 +170,6 @@ static const struct key numeric_keys[] = {
 	{ keytype_arrow_left, "<", "<", "<", 1},
 	{ keytype_arrow_right, ">", ">", ">", 1},
 	{ keytype_arrow_down, "\\/", "\\/", "\\/", 1},
-	{ keytype_style, "", "", "", 2}
 };
 
 static const struct key arabic_keys[] = {
@@ -210,7 +217,6 @@ static const struct key arabic_keys[] = {
 	{ keytype_space, "", "", "", 6},
 	{ keytype_default, ".", "ذ", "]", 1},
 	{ keytype_default, "ط", "ﺝ", "[", 1},
-	{ keytype_style, "", "", "", 2}
 };
 
 
@@ -219,8 +225,7 @@ static const struct layout normal_layout = {
 	sizeof(normal_keys) / sizeof(*normal_keys),
 	12,
 	4,
-	"en",
-	ZWP_TEXT_INPUT_V1_TEXT_DIRECTION_LTR
+	"en"
 };
 
 static const struct layout numeric_layout = {
@@ -228,8 +233,7 @@ static const struct layout numeric_layout = {
 	sizeof(numeric_keys) / sizeof(*numeric_keys),
 	12,
 	2,
-	"en",
-	ZWP_TEXT_INPUT_V1_TEXT_DIRECTION_LTR
+	"en"
 };
 
 static const struct layout arabic_layout = {
@@ -237,19 +241,7 @@ static const struct layout arabic_layout = {
 	sizeof(arabic_keys) / sizeof(*arabic_keys),
 	13,
 	4,
-	"ar",
-	ZWP_TEXT_INPUT_V1_TEXT_DIRECTION_RTL
-};
-
-static const char *style_labels[] = {
-	"default",
-	"none",
-	"active",
-	"inactive",
-	"highlight",
-	"underline",
-	"selection",
-	"incorrect"
+	"ar"
 };
 
 static const double key_width = 60;
@@ -269,6 +261,9 @@ struct keyboard {
 	enum keyboard_state state;
 };
 
+static void keyboard_set_visibility(struct virtual_keyboard *virtual_keyboard,
+				    bool visible);
+
 static void __attribute__ ((format (printf, 1, 2)))
 dbg(const char *fmt, ...)
 {
@@ -285,9 +280,6 @@ static const char *
 label_from_key(struct keyboard *keyboard,
 	       const struct key *key)
 {
-	if (key->key_type == keytype_style)
-		return style_labels[keyboard->keyboard->preedit_style];
-
 	switch(keyboard->state) {
 	case KEYBOARD_STATE_DEFAULT:
 		return key->label;
@@ -341,9 +333,13 @@ draw_key(struct keyboard *keyboard,
 static const struct layout *
 get_current_layout(struct virtual_keyboard *keyboard)
 {
-	switch (keyboard->content_purpose) {
-		case ZWP_TEXT_INPUT_V1_CONTENT_PURPOSE_DIGITS:
-		case ZWP_TEXT_INPUT_V1_CONTENT_PURPOSE_NUMBER:
+	if (!keyboard->current.active) {
+		return &normal_layout;
+	}
+
+	switch (keyboard->current.content_purpose) {
+		case ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_DIGITS:
+		case ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NUMBER:
 			return &numeric_layout;
 		default:
 			if (keyboard->preferred_language &&
@@ -430,22 +426,21 @@ virtual_keyboard_commit_preedit(struct virtual_keyboard *keyboard)
 	    strlen(keyboard->preedit_string) == 0)
 		return;
 
-	zwp_input_method_context_v1_cursor_position(keyboard->context,
-						    0, 0);
-	zwp_input_method_context_v1_commit_string(keyboard->context,
-						  keyboard->serial,
-						  keyboard->preedit_string);
+	zwp_input_method_v2_commit_string(keyboard->input_method,
+					  keyboard->preedit_string);
+	zwp_input_method_v2_commit(keyboard->input_method,
+				   keyboard->serial);
 
-	if (keyboard->surrounding_text) {
-		surrounding_text = insert_text(keyboard->surrounding_text,
-					       keyboard->surrounding_cursor,
+	if (keyboard->current.surrounding_text) {
+		surrounding_text = insert_text(keyboard->current.surrounding_text,
+					       keyboard->current.surrounding_cursor,
 					       keyboard->preedit_string);
-		free(keyboard->surrounding_text);
-		keyboard->surrounding_text = surrounding_text;
-		keyboard->surrounding_cursor += strlen(keyboard->preedit_string);
+		free(keyboard->current.surrounding_text);
+		keyboard->current.surrounding_text = surrounding_text;
+		keyboard->current.surrounding_cursor += strlen(keyboard->preedit_string);
 	} else {
-		keyboard->surrounding_text = strdup(keyboard->preedit_string);
-		keyboard->surrounding_cursor = strlen(keyboard->preedit_string);
+		keyboard->current.surrounding_text = strdup(keyboard->preedit_string);
+		keyboard->current.surrounding_cursor = strlen(keyboard->preedit_string);
 	}
 
 	free(keyboard->preedit_string);
@@ -458,19 +453,11 @@ virtual_keyboard_send_preedit(struct virtual_keyboard *keyboard,
 {
 	uint32_t index = strlen(keyboard->preedit_string);
 
-	if (keyboard->preedit_style)
-		zwp_input_method_context_v1_preedit_styling(keyboard->context,
-							    0,
-							    strlen(keyboard->preedit_string),
-							    keyboard->preedit_style);
 	if (cursor > 0)
 		index = cursor;
-	zwp_input_method_context_v1_preedit_cursor(keyboard->context,
-						   index);
-	zwp_input_method_context_v1_preedit_string(keyboard->context,
-						   keyboard->serial,
-						   keyboard->preedit_string,
-						   keyboard->preedit_string);
+	zwp_input_method_v2_set_preedit_string(keyboard->input_method,
+					       keyboard->preedit_string, index, index);
+	zwp_input_method_v2_commit(keyboard->input_method, keyboard->serial);
 }
 
 static const char *
@@ -487,33 +474,33 @@ static void
 delete_before_cursor(struct virtual_keyboard *keyboard)
 {
 	const char *start, *end;
+	const char *surrounding_text = keyboard->current.surrounding_text;
+	uint32_t surrounding_cursor = keyboard->current.surrounding_cursor;
 
-	if (!keyboard->surrounding_text) {
+	if (!surrounding_text) {
 		dbg("delete_before_cursor: No surrounding text available\n");
 		return;
 	}
 
-	start = prev_utf8_char(keyboard->surrounding_text,
-			       keyboard->surrounding_text + keyboard->surrounding_cursor);
+	start = prev_utf8_char(surrounding_text,
+			       surrounding_text + surrounding_cursor);
 	if (!start) {
 		dbg("delete_before_cursor: No previous character to delete\n");
 		return;
 	}
 
-	end = keyboard->surrounding_text + keyboard->surrounding_cursor;
+	end = surrounding_text + surrounding_cursor;
 
-	zwp_input_method_context_v1_delete_surrounding_text(keyboard->context,
-							    (start - keyboard->surrounding_text) - keyboard->surrounding_cursor,
-							    end - start);
-	zwp_input_method_context_v1_commit_string(keyboard->context,
-						  keyboard->serial,
-						  "");
+	zwp_input_method_v2_delete_surrounding_text(keyboard->input_method,
+						    surrounding_cursor - (start - surrounding_text), 0);
+	zwp_input_method_v2_commit(keyboard->input_method, keyboard->serial);
 
 	/* Update surrounding text */
-	keyboard->surrounding_cursor = start - keyboard->surrounding_text;
-	keyboard->surrounding_text[keyboard->surrounding_cursor] = '\0';
+	keyboard->current.surrounding_cursor = start - surrounding_text;
+	keyboard->current.surrounding_text[surrounding_cursor] = '\0';
 	if (*end)
-		memmove(keyboard->surrounding_text + keyboard->surrounding_cursor, end, strlen(end));
+		memmove(keyboard->current.surrounding_text + keyboard->current.surrounding_cursor,
+			end, strlen(end));
 }
 
 static char *
@@ -548,7 +535,6 @@ keyboard_handle_key(struct keyboard *keyboard, uint32_t time, const struct key *
 		break;
 	}
 
-	xkb_mod_mask_t mod_mask = keyboard->state == KEYBOARD_STATE_DEFAULT ? 0 : keyboard->keyboard->keysym.shift_mask;
 	uint32_t key_state = (state == WL_POINTER_BUTTON_STATE_PRESSED) ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 
 	switch (key->key_type) {
@@ -562,6 +548,16 @@ keyboard_handle_key(struct keyboard *keyboard, uint32_t time, const struct key *
 			virtual_keyboard_send_preedit(keyboard->keyboard, -1);
 			break;
 		case keytype_backspace:
+			if (!keyboard->keyboard->current.active ||
+			    ((!keyboard->keyboard->preedit_string ||
+			      strlen(keyboard->keyboard->preedit_string) == 0) &&
+			     (!keyboard->keyboard->current.surrounding_text ||
+			      strlen(keyboard->keyboard->current.surrounding_text) == 0))) {
+				zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+							    time, KEY_BACKSPACE, key_state);
+				break;
+			}
+
 			if (state != WL_POINTER_BUTTON_STATE_PRESSED)
 				break;
 
@@ -573,13 +569,18 @@ keyboard_handle_key(struct keyboard *keyboard, uint32_t time, const struct key *
 			}
 			break;
 		case keytype_enter:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Return, key_state, mod_mask);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_ENTER, key_state);
 			break;
 		case keytype_space:
+			if (!keyboard->keyboard->current.active) {
+				zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+							    time, KEY_SPACE, key_state);
+				break;
+			}
 			if (state != WL_POINTER_BUTTON_STATE_PRESSED)
 				break;
 			keyboard->keyboard->preedit_string =
@@ -617,45 +618,39 @@ keyboard_handle_key(struct keyboard *keyboard, uint32_t time, const struct key *
 			}
 			break;
 		case keytype_tab:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Tab, key_state, mod_mask);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_TAB, key_state);
 			break;
 		case keytype_arrow_up:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Up, key_state, mod_mask);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_UP, key_state);
 			break;
 		case keytype_arrow_left:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Left, key_state, mod_mask);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_LEFT, key_state);
 			break;
 		case keytype_arrow_right:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Right, key_state, mod_mask);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_RIGHT, key_state);
 			break;
 		case keytype_arrow_down:
-			virtual_keyboard_commit_preedit(keyboard->keyboard);
-			zwp_input_method_context_v1_keysym(keyboard->keyboard->context,
-							   display_get_serial(keyboard->keyboard->display),
-							   time,
-							   XKB_KEY_Down, key_state, mod_mask);
-			break;
-		case keytype_style:
-			if (state != WL_POINTER_BUTTON_STATE_PRESSED)
-				break;
-			keyboard->keyboard->preedit_style = (keyboard->keyboard->preedit_style + 1) % 8; /* TODO */
-			virtual_keyboard_send_preedit(keyboard->keyboard, -1);
+			if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
+			    keyboard->keyboard->current.active)
+				virtual_keyboard_commit_preedit(keyboard->keyboard);
+			zwp_virtual_keyboard_v1_key(keyboard->keyboard->virtual_keyboard,
+						    time, KEY_DOWN, key_state);
 			break;
 	}
 }
@@ -752,188 +747,128 @@ touch_up_handler(struct widget *widget, struct input *input,
 }
 
 static void
+input_method_activate(void *data,
+		      struct zwp_input_method_v2 *input_method)
+{
+	struct virtual_keyboard *virtual_keyboard = data;
+	struct text_input_state defaults = {0};
+
+	if (virtual_keyboard->pending.surrounding_text)
+		free(virtual_keyboard->pending.surrounding_text);
+	virtual_keyboard->pending.surrounding_text = NULL;
+	virtual_keyboard->pending = defaults;
+	if (virtual_keyboard->preedit_string)
+		free(virtual_keyboard->preedit_string);
+	virtual_keyboard->preedit_string = strdup("");
+	virtual_keyboard->pending.active = true;
+}
+
+static void
+input_method_deactivate(void *data,
+			struct zwp_input_method_v2 *input_method)
+{
+	struct virtual_keyboard *virtual_keyboard = data;
+
+	virtual_keyboard->pending.active = false;
+}
+
+static void
 handle_surrounding_text(void *data,
-			struct zwp_input_method_context_v1 *context,
+			struct zwp_input_method_v2 *input_method,
 			const char *text,
 			uint32_t cursor,
 			uint32_t anchor)
 {
 	struct virtual_keyboard *keyboard = data;
 
-	free(keyboard->surrounding_text);
-	keyboard->surrounding_text = strdup(text);
+	if (keyboard->pending.surrounding_text)
+		free(keyboard->pending.surrounding_text);
+	keyboard->pending.surrounding_text = strdup(text);
 
-	keyboard->surrounding_cursor = cursor;
+	keyboard->pending.surrounding_cursor = cursor;
 }
 
 static void
-handle_reset(void *data,
-	     struct zwp_input_method_context_v1 *context)
+handle_text_change_cause(void *data,
+			 struct zwp_input_method_v2 *zwp_input_method_v2,
+			 uint32_t cause)
 {
 	struct virtual_keyboard *keyboard = data;
 
-	dbg("Reset pre-edit buffer\n");
-
-	if (strlen(keyboard->preedit_string)) {
-		free(keyboard->preedit_string);
-		keyboard->preedit_string = strdup("");
-	}
+	keyboard->pending.change_cause = cause;
 }
 
 static void
 handle_content_type(void *data,
-		    struct zwp_input_method_context_v1 *context,
+		    struct zwp_input_method_v2 *input_method,
 		    uint32_t hint,
 		    uint32_t purpose)
 {
 	struct virtual_keyboard *keyboard = data;
 
-	keyboard->content_hint = hint;
-	keyboard->content_purpose = purpose;
-}
-
-static void
-handle_invoke_action(void *data,
-		     struct zwp_input_method_context_v1 *context,
-		     uint32_t button,
-		     uint32_t index)
-{
-	struct virtual_keyboard *keyboard = data;
-
-	if (button != BTN_LEFT)
-		return;
-
-	virtual_keyboard_send_preedit(keyboard, index);
+	keyboard->pending.content_hint = hint;
+	keyboard->pending.content_purpose = purpose;
 }
 
 static void
 handle_commit_state(void *data,
-		    struct zwp_input_method_context_v1 *context,
-		    uint32_t serial)
+		    struct zwp_input_method_v2 *input_method)
 {
-	struct virtual_keyboard *keyboard = data;
-	const struct layout *layout;
+	struct virtual_keyboard *virtual_keyboard = data;
+	struct text_input_state defaults = {0};
 
-	keyboard->serial = serial;
+	virtual_keyboard->serial++;
 
-	layout = get_current_layout(keyboard);
+	if (virtual_keyboard->pending.surrounding_text)
+		free(virtual_keyboard->pending.surrounding_text);
+	virtual_keyboard->pending.surrounding_text = NULL;
+	virtual_keyboard->current = virtual_keyboard->pending;
+	virtual_keyboard->pending = defaults;
+	virtual_keyboard->pending.active = virtual_keyboard->current.active;
 
-	if (keyboard->surrounding_text)
-		dbg("Surrounding text updated: %s\n", keyboard->surrounding_text);
-
-	window_schedule_resize(keyboard->keyboard->window,
-			       layout->columns * key_width,
-			       layout->rows * key_height);
-
-	zwp_input_method_context_v1_language(context,
-					     keyboard->serial,
-					     layout->language);
-	zwp_input_method_context_v1_text_direction(context,
-						   keyboard->serial,
-						   layout->text_direction);
-
-	widget_schedule_redraw(keyboard->keyboard->widget);
+	keyboard_set_visibility(virtual_keyboard,
+				virtual_keyboard->current.active);
 }
 
 static void
-handle_preferred_language(void *data,
-			  struct zwp_input_method_context_v1 *context,
-			  const char *language)
+handle_unavailable(void *data,
+		   struct zwp_input_method_v2 *zwp_input_method_v2)
 {
-	struct virtual_keyboard *keyboard = data;
+	struct virtual_keyboard *virtual_keyboard = data;
 
-	if (keyboard->preferred_language)
-		free(keyboard->preferred_language);
-
-	keyboard->preferred_language = NULL;
-
-	if (language)
-		keyboard->preferred_language = strdup(language);
+	virtual_keyboard->current.active = false;
+	zwp_input_method_v2_destroy(virtual_keyboard->input_method);
+	virtual_keyboard->input_method = NULL;
+	keyboard_set_visibility(virtual_keyboard, false);
 }
 
-static const struct zwp_input_method_context_v1_listener input_method_context_listener = {
-	handle_surrounding_text,
-	handle_reset,
-	handle_content_type,
-	handle_invoke_action,
-	handle_commit_state,
-	handle_preferred_language
-};
-
-static void
-input_method_activate(void *data,
-		      struct zwp_input_method_v1 *input_method,
-		      struct zwp_input_method_context_v1 *context)
-{
-	struct virtual_keyboard *keyboard = data;
-	struct wl_array modifiers_map;
-	const struct layout *layout;
-
-	keyboard->keyboard->state = KEYBOARD_STATE_DEFAULT;
-
-	if (keyboard->context)
-		zwp_input_method_context_v1_destroy(keyboard->context);
-
-	if (keyboard->preedit_string)
-		free(keyboard->preedit_string);
-
-	keyboard->preedit_string = strdup("");
-	keyboard->content_hint = 0;
-	keyboard->content_purpose = 0;
-	free(keyboard->preferred_language);
-	keyboard->preferred_language = NULL;
-	free(keyboard->surrounding_text);
-	keyboard->surrounding_text = NULL;
-
-	keyboard->serial = 0;
-
-	keyboard->context = context;
-	zwp_input_method_context_v1_add_listener(context,
-						 &input_method_context_listener,
-						 keyboard);
-
-	wl_array_init(&modifiers_map);
-	keysym_modifiers_add(&modifiers_map, "Shift");
-	keysym_modifiers_add(&modifiers_map, "Control");
-	keysym_modifiers_add(&modifiers_map, "Mod1");
-	zwp_input_method_context_v1_modifiers_map(context, &modifiers_map);
-	keyboard->keysym.shift_mask = keysym_modifiers_get_mask(&modifiers_map, "Shift");
-	wl_array_release(&modifiers_map);
-
-	layout = get_current_layout(keyboard);
-
-	window_schedule_resize(keyboard->keyboard->window,
-			       layout->columns * key_width,
-			       layout->rows * key_height);
-
-	zwp_input_method_context_v1_language(context,
-					     keyboard->serial,
-					     layout->language);
-	zwp_input_method_context_v1_text_direction(context,
-						   keyboard->serial,
-						   layout->text_direction);
-
-	widget_schedule_redraw(keyboard->keyboard->widget);
-}
-
-static void
-input_method_deactivate(void *data,
-			struct zwp_input_method_v1 *input_method,
-			struct zwp_input_method_context_v1 *context)
-{
-	struct virtual_keyboard *keyboard = data;
-
-	if (!keyboard->context)
-		return;
-
-	zwp_input_method_context_v1_destroy(keyboard->context);
-	keyboard->context = NULL;
-}
-
-static const struct zwp_input_method_v1_listener input_method_listener = {
+static const struct zwp_input_method_v2_listener input_method_listener = {
 	input_method_activate,
-	input_method_deactivate
+	input_method_deactivate,
+	handle_surrounding_text,
+	handle_text_change_cause,
+	handle_content_type,
+	handle_commit_state,
+	handle_unavailable
 };
+
+static void
+make_input_method(struct virtual_keyboard *virtual_keyboard)
+{
+	virtual_keyboard->input_method =
+		zwp_input_method_manager_v2_get_input_method(
+			virtual_keyboard->input_method_manager, virtual_keyboard->seat);
+	zwp_input_method_v2_add_listener(virtual_keyboard->input_method,
+		&input_method_listener, virtual_keyboard);
+}
+
+static void
+make_virtual_keyboard(struct virtual_keyboard *virtual_keyboard)
+{
+	virtual_keyboard->virtual_keyboard =
+		zwp_virtual_keyboard_manager_v1_create_virtual_keyboard(
+			virtual_keyboard->virtual_keyboard_manager, virtual_keyboard->seat);
+}
 
 static void
 global_handler(struct display *display, uint32_t name,
@@ -941,57 +876,60 @@ global_handler(struct display *display, uint32_t name,
 {
 	struct virtual_keyboard *keyboard = data;
 
-	if (!strcmp(interface, "zwp_input_panel_v1")) {
+	if (!strcmp(interface, "weston_input_panel")) {
 		keyboard->input_panel =
-			display_bind(display, name, &zwp_input_panel_v1_interface, 1);
-	} else if (!strcmp(interface, "zwp_input_method_v1")) {
-		keyboard->input_method =
 			display_bind(display, name,
-				     &zwp_input_method_v1_interface, 1);
-		zwp_input_method_v1_add_listener(keyboard->input_method,
-						 &input_method_listener,
-						 keyboard);
+				     &weston_input_panel_interface, 1);
+	} else if (!strcmp(interface, "zwp_input_method_manager_v2")) {
+		keyboard->input_method_manager =
+			display_bind(display, name,
+				     &zwp_input_method_manager_v2_interface, 1);
+	} else if (!strcmp(interface, "zwp_virtual_keyboard_manager_v1")) {
+		keyboard->virtual_keyboard_manager =
+			display_bind(display, name,
+				     &zwp_virtual_keyboard_manager_v1_interface, 1);
 	}
+
 }
 
 static void
 set_toplevel(struct output *output, struct virtual_keyboard *virtual_keyboard)
 {
-	struct zwp_input_panel_surface_v1 *ips;
+	struct weston_input_panel_surface *ips;
 	struct keyboard *keyboard = virtual_keyboard->keyboard;
 
-	ips = zwp_input_panel_v1_get_input_panel_surface(virtual_keyboard->input_panel,
+	ips = weston_input_panel_get_input_panel_surface(virtual_keyboard->input_panel,
 							 window_get_wl_surface(keyboard->window));
 
-	zwp_input_panel_surface_v1_set_toplevel(ips,
+	weston_input_panel_surface_set_toplevel(ips,
 						output_get_wl_output(output),
-						ZWP_INPUT_PANEL_SURFACE_V1_POSITION_CENTER_BOTTOM);
+						WESTON_INPUT_PANEL_SURFACE_POSITION_CENTER_BOTTOM);
 
 	virtual_keyboard->toplevel = true;
 }
 
 static void
-display_output_handler(struct output *output, void *data) {
+display_output_handler(struct output *output, void *data)
+{
 	struct virtual_keyboard *keyboard = data;
 
-	if (!keyboard->toplevel)
+	if (!keyboard->toplevel && keyboard->keyboard->window)
 		set_toplevel(output, keyboard);
 }
 
 static void
-keyboard_create(struct virtual_keyboard *virtual_keyboard)
+keyboard_window_create(struct virtual_keyboard *virtual_keyboard)
 {
-	struct keyboard *keyboard;
+	struct keyboard *keyboard = virtual_keyboard->keyboard;
 	const struct layout *layout;
+
+	if (keyboard->window)
+		return;
 
 	layout = get_current_layout(virtual_keyboard);
 
-	keyboard = xzalloc(sizeof *keyboard);
-	keyboard->keyboard = virtual_keyboard;
 	keyboard->window = window_create_custom(virtual_keyboard->display);
 	keyboard->widget = window_add_widget(keyboard->window, keyboard);
-
-	virtual_keyboard->keyboard = keyboard;
 
 	window_set_title(keyboard->window, "Virtual keyboard");
 	window_set_user_data(keyboard->window, keyboard);
@@ -1005,6 +943,38 @@ keyboard_create(struct virtual_keyboard *virtual_keyboard)
 	window_schedule_resize(keyboard->window,
 			       layout->columns * key_width,
 			       layout->rows * key_height);
+}
+
+static void
+keyboard_window_destroy(struct virtual_keyboard *virtual_keyboard)
+{
+	if (!virtual_keyboard->keyboard->window)
+		return;
+
+	widget_destroy(virtual_keyboard->keyboard->widget);
+	virtual_keyboard->keyboard->widget = NULL;
+	window_destroy(virtual_keyboard->keyboard->window);
+	virtual_keyboard->keyboard->window = NULL;
+}
+
+static void
+keyboard_set_visibility(struct virtual_keyboard *virtual_keyboard,
+			bool visible)
+{
+	if (visible)
+		keyboard_window_create(virtual_keyboard);
+	else
+		keyboard_window_destroy(virtual_keyboard);
+}
+
+static void
+keyboard_create(struct virtual_keyboard *virtual_keyboard)
+{
+	struct keyboard *keyboard;
+
+	keyboard = xzalloc(sizeof *keyboard);
+	keyboard->keyboard = virtual_keyboard;
+	virtual_keyboard->keyboard = keyboard;
 
 	display_set_output_configure_handler(virtual_keyboard->display,
 					     display_output_handler);
@@ -1026,12 +996,34 @@ main(int argc, char *argv[])
 	display_set_user_data(virtual_keyboard.display, &virtual_keyboard);
 	display_set_global_handler(virtual_keyboard.display, global_handler);
 
+	virtual_keyboard.seat = display_get_seat(virtual_keyboard.display);
+
+	if (virtual_keyboard.seat == NULL) {
+		fprintf(stderr, "No seat available\n");
+		return -1;
+	}
+
+	if (virtual_keyboard.input_method_manager == NULL) {
+		fprintf(stderr, "No input method manager global\n");
+		return -1;
+	}
+
+	if (virtual_keyboard.virtual_keyboard_manager == NULL) {
+		fprintf(stderr, "No virtual keyboard manager global\n");
+		return -1;
+	}
+
 	if (virtual_keyboard.input_panel == NULL) {
 		fprintf(stderr, "No input panel global\n");
 		return -1;
 	}
 
+	make_input_method(&virtual_keyboard);
+	make_virtual_keyboard(&virtual_keyboard);
+
 	keyboard_create(&virtual_keyboard);
+
+	keyboard_set_visibility(&virtual_keyboard, true);
 
 	display_run(virtual_keyboard.display);
 

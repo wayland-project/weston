@@ -77,6 +77,9 @@ display_get_cairo_device(struct display *display);
 struct wl_compositor *
 display_get_compositor(struct display *display);
 
+struct wl_seat *
+display_get_seat(struct display *display);
+
 struct output *
 display_get_output(struct display *display);
 

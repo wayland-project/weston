@@ -6317,6 +6317,15 @@ display_get_compositor(struct display *display)
 	return display->compositor;
 }
 
+struct wl_seat *
+display_get_seat(struct display *display)
+{
+	if (wl_list_empty(&display->input_list))
+		return NULL;
+
+	return container_of(display->input_list.next, struct input, link)->seat;
+}
+
 uint32_t
 display_get_serial(struct display *display)
 {

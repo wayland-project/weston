@@ -16,6 +16,7 @@ install_data(
 
 generated_protocols = [
 	[ 'input-method', 'v1' ],
+	[ 'input-method', 'v2' ],
 	[ 'input-timestamps', 'v1' ],
 	[ 'ivi-application', 'internal' ],
 	[ 'ivi-hmi-controller', 'internal' ],
@@ -28,9 +29,12 @@ generated_protocols = [
 	[ 'tablet', 'v2' ],
 	[ 'text-cursor-position', 'internal' ],
 	[ 'text-input', 'v1' ],
+	[ 'text-input', 'v3' ],
 	[ 'viewporter', 'stable' ],
+	[ 'virtual-keyboard', 'v1' ],
 	[ 'weston-debug', 'internal' ],
 	[ 'weston-desktop-shell', 'internal' ],
+	[ 'weston-input-panel', 'internal' ],
 	[ 'weston-screenshooter', 'internal' ],
 	[ 'weston-test', 'internal' ],
 	[ 'weston-touch-calibration', 'internal' ],
