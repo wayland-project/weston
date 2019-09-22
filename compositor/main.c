@@ -58,6 +58,7 @@
 #include <libweston/backend-drm.h>
 #include <libweston/backend-headless.h>
 #include <libweston/backend-rdp.h>
+#include <libweston/backend-vnc.h>
 #include <libweston/backend-fbdev.h>
 #include <libweston/backend-x11.h>
 #include <libweston/backend-wayland.h>
@@ -643,6 +644,9 @@ usage(int error_code)
 #if defined(BUILD_RDP_COMPOSITOR)
 			"\t\t\t\trdp-backend.so\n"
 #endif
+#if defined(BUILD_VNC_COMPOSITOR)
+			"\t\t\t\tvnc-backend.so\n"
+#endif
 #if defined(BUILD_WAYLAND_COMPOSITOR)
 			"\t\t\t\twayland-backend.so\n"
 #endif
@@ -715,6 +719,15 @@ usage(int error_code)
 		"  --rdp4-key=FILE\tThe file containing the key for RDP4 encryption\n"
 		"  --rdp-tls-cert=FILE\tThe file containing the certificate for TLS encryption\n"
 		"  --rdp-tls-key=FILE\tThe file containing the private key for TLS encryption\n"
+		"\n");
+#endif
+
+#if defined(BUILD_VNC_COMPOSITOR)
+	fprintf(out,
+		"Options for vnc-backend.so:\n\n"
+		"  --width=WIDTH\t\tWidth of desktop\n"
+		"  --height=HEIGHT\tHeight of desktop\n"
+		"  --port=PORT\t\tThe port to listen on\n"
 		"\n");
 #endif
 
@@ -2734,6 +2747,83 @@ load_rdp_backend(struct weston_compositor *c,
 }
 
 static int
+vnc_backend_output_configure(struct weston_output *output)
+{
+	struct wet_compositor *compositor = to_wet_compositor(output->compositor);
+	struct wet_output_config *parsed_options = compositor->parsed_options;
+	const struct weston_vnc_output_api *api = weston_vnc_output_get_api(output->compositor);
+	int width = 640;
+	int height = 480;
+
+	assert(parsed_options);
+
+	if (!api) {
+		weston_log("Cannot use weston_vnc_output_api.\n");
+		return -1;
+	}
+
+	if (parsed_options->width)
+		width = parsed_options->width;
+
+	if (parsed_options->height)
+		height = parsed_options->height;
+
+	weston_output_set_scale(output, 1);
+	weston_output_set_transform(output, WL_OUTPUT_TRANSFORM_NORMAL);
+
+	if (api->output_set_size(output, width, height) < 0) {
+		weston_log("Cannot configure output \"%s\" using weston_vnc_output_api.\n",
+			   output->name);
+		return -1;
+	}
+	weston_log("vnc_backend_output_configure.. Done\n");
+
+	return 0;
+}
+
+
+static void
+weston_vnc_backend_config_init(struct weston_vnc_backend_config *config)
+{
+	config->base.struct_version = WESTON_VNC_BACKEND_CONFIG_VERSION;
+	config->base.struct_size = sizeof(struct weston_vnc_backend_config);
+
+	config->bind_address = NULL;
+	config->port = 5900;
+}
+
+static int
+load_vnc_backend(struct weston_compositor *c,
+		int *argc, char *argv[], struct weston_config *wc)
+{
+	struct weston_vnc_backend_config config  = {{ 0, }};
+	int ret = 0;
+
+	struct wet_output_config *parsed_options = wet_init_parsed_options(c);
+	if (!parsed_options)
+		return -1;
+
+	weston_vnc_backend_config_init(&config);
+
+	const struct weston_option vnc_options[] = {
+		{ WESTON_OPTION_INTEGER, "width", 0, &parsed_options->width },
+		{ WESTON_OPTION_INTEGER, "height", 0, &parsed_options->height },
+		{ WESTON_OPTION_STRING,  "address", 0, &config.bind_address },
+		{ WESTON_OPTION_INTEGER, "port", 0, &config.port },
+	};
+
+	parse_options(vnc_options, ARRAY_LENGTH(vnc_options), argc, argv);
+
+	wet_set_simple_head_configurator(c, vnc_backend_output_configure);
+
+	ret = weston_compositor_load_backend(c, WESTON_BACKEND_VNC,
+					     &config.base);
+
+	return ret;
+}
+
+
+static int
 fbdev_backend_output_configure(struct weston_output *output)
 {
 	struct weston_config *wc = wet_get_config(output->compositor);
@@ -3026,6 +3116,8 @@ load_backend(struct weston_compositor *compositor, const char *backend,
 		return load_headless_backend(compositor, argc, argv, config);
 	else if (strstr(backend, "rdp-backend.so"))
 		return load_rdp_backend(compositor, argc, argv, config);
+	else if (strstr(backend, "vnc-backend.so"))
+		return load_vnc_backend(compositor, argc, argv, config);
 	else if (strstr(backend, "fbdev-backend.so"))
 		return load_fbdev_backend(compositor, argc, argv, config);
 	else if (strstr(backend, "drm-backend.so"))

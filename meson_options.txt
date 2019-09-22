@@ -27,6 +27,12 @@ option(
 	description: 'Weston backend: RDP remote screensharing'
 )
 option(
+	'backend-vnc',
+	type: 'boolean',
+	value: false,
+	description: 'Weston backend: VNC remote screensharing'
+)
+option(
 	'screenshare',
 	type: 'boolean',
 	value: true,
