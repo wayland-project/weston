@@ -3,14 +3,25 @@ if not get_option('backend-vnc')
 endif
 
 config_h.set('BUILD_VNC_COMPOSITOR', '1')
-dep_neatvnc = dependency('neatvnc', version: '>= 0.0.0', required: true)
-if not dep_neatvnc.found()
-	error('VNC backend requires neatvnc which was not found. Or, you can use \'-Dbackend-vnc=false\'.')
+
+neatvnc_project = subproject('neatvnc', required: false)
+if neatvnc_project.found()
+	dep_neatvnc = neatvnc_project.get_variable('neatvnc_dep')
+else
+	dep_neatvnc = dependency('neatvnc', version: '>= 0.0.0', required: true)
+	if not dep_neatvnc.found()
+		error('VNC backend requires neatvnc which was not found. Or, you can use \'-Dbackend-vnc=false\'.')
+	endif
 endif
 
-dep_aml = dependency('aml', version: '>= 0.0.0', required: true)
-if not dep_aml.found()
-	error('VNC backend requires libaml which was not found. Or, you can use \'-Dbackend-vnc=false\'.')
+aml_project = subproject('aml', required: false)
+if aml_project.found()
+	dep_aml = aml_project.get_variable('aml_dep')
+else
+	dep_aml = dependency('aml', version: '>= 0.0.0', required: true)
+	if not dep_aml.found()
+		error('VNC backend requires libaml which was not found. Or, you can use \'-Dbackend-vnc=false\'.')
+	endif
 endif
 
 deps_vnc = [
