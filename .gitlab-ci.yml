@@ -54,23 +54,26 @@ container_prep:
   - export TESTS_RES_PATH="$BUILDDIR/tests-res.txt"
   - mkdir "$BUILDDIR" "$PREFIX"
 
+.default-meson-script: &default-meson-script
+- export PATH=~/.local/bin:$PATH
+- cd "$BUILDDIR"
+- meson --prefix="$PREFIX" ${MESON_OPTIONS} ..
+- ninja -k0
+- ninja install
+- virtme-run --rw --pwd --kimg /weston-virtme/bzImage --script-dir ../.gitlab-ci/virtme-scripts
+- TEST_RES=$(cat $TESTS_RES_PATH)
+- rm $TESTS_RES_PATH
+- ninja clean
+- cp -R /weston-virtme ./
+- rm weston-virtme/bzImage
+- exit $TEST_RES
+
 .build-native-meson:
   extends: .build-native
   tags:
     - kvm
   script:
-  - export PATH=~/.local/bin:$PATH
-  - cd "$BUILDDIR"
-  - meson --prefix="$PREFIX" ${MESON_OPTIONS} ..
-  - ninja -k0
-  - ninja install
-  - virtme-run --rw --pwd --kimg /weston-virtme/bzImage --script-dir ../.gitlab-ci/virtme-scripts
-  - TEST_RES=$(cat $TESTS_RES_PATH)
-  - rm $TESTS_RES_PATH
-  - ninja clean
-  - cp -R /weston-virtme ./
-  - rm weston-virtme/bzImage
-  - exit $TEST_RES
+  - *default-meson-script
   artifacts:
     name: weston-$CI_COMMIT_SHA
     when: always
@@ -93,6 +96,26 @@ build-native-meson-no-gl-renderer:
       -Drenderer-gl=false
       -Dremoting=false
       -Dpipewire=false
+      -Dwerror=true
+  extends: .build-native-meson
+
+build-native-meson-vnc-backend:
+  script:
+  - mkdir "subprojects/"
+  - cd "subprojects/"
+  - git clone https://github.com/any1/aml.git
+  - cd aml/
+  - git checkout d1783ccb26ad094858633401095085c9de683841
+  - cd ..
+  - git clone https://github.com/any1/neatvnc.git
+  - cd neatvnc/
+  - git checkout 6ad4aba374153d36c99ea5073b747697774f4e3e
+  - cd ..
+  - *default-meson-script
+  variables:
+    MESON_OPTIONS: >
+      -Dsimple-clients=damage,im,shm,touch,dmabuf-v4l
+      -Dbackend-vnc=true
       -Dwerror=true
   extends: .build-native-meson
 
