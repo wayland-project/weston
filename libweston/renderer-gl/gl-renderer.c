@@ -364,6 +364,9 @@ egl_image_create(struct gl_renderer *gr, EGLenum target,
 	struct egl_image *img;
 
 	img = zalloc(sizeof *img);
+	if (!img)
+		return NULL;
+
 	img->renderer = gr;
 	img->refcount = 1;
 	img->image = gr->create_image(gr->egl_display, EGL_NO_CONTEXT,
@@ -408,6 +411,9 @@ dmabuf_image_create(void)
 	struct dmabuf_image *img;
 
 	img = zalloc(sizeof *img);
+	if (!img)
+		return NULL;
+
 	wl_list_init(&img->link);
 
 	return img;

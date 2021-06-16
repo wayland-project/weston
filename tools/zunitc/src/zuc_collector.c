@@ -157,6 +157,8 @@ zuc_collector_create(int *pipe_fd)
 {
 	struct zuc_event_listener *listener =
 		zalloc(sizeof(struct zuc_event_listener));
+	if (!listener)
+		return NULL;
 
 	listener->data = zalloc(sizeof(struct collector_data));
 	((struct collector_data *)listener->data)->fd = pipe_fd;
@@ -247,6 +249,9 @@ store_event(struct collector_data *cdata,
 	    intptr_t val1, intptr_t val2, const char *expr1, const char *expr2)
 {
 	struct zuc_event *event = zalloc(sizeof(*event));
+	if (!event)
+		return;
+
 	event->file = strdup(file);
 	event->line = line;
 	event->state = state;
@@ -374,6 +379,9 @@ unpack_event(char const *ptr, int32_t len)
 {
 	int32_t val = 0;
 	struct zuc_event *evt = zalloc(sizeof(*evt));
+	if (!evt)
+		return NULL;
+
 	char const *tmp = unpack_string(ptr, &evt->file);
 	tmp = unpack_int32(tmp, &evt->line);
 
