@@ -409,6 +409,9 @@ gears_create(struct display *display)
 	int i;
 
 	gears = zalloc(sizeof *gears);
+	if (!gears)
+		return NULL;
+
 	gears->d = display;
 	gears->window = window_create(display);
 	gears->widget = window_frame_create(gears->window, gears);

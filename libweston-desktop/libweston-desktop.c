@@ -63,6 +63,9 @@ weston_desktop_create(struct weston_compositor *compositor,
 	assert(api->surface_removed);
 
 	desktop = zalloc(sizeof(struct weston_desktop));
+	if (!desktop)
+		return NULL;
+
 	desktop->compositor = compositor;
 	desktop->user_data = user_data;
 

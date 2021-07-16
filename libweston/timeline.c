@@ -161,6 +161,9 @@ weston_timeline_subscription_object_create(void *object,
 	struct weston_timeline_subscription_object *sub_obj;
 
 	sub_obj = zalloc(sizeof(*sub_obj));
+	if (!sub_obj)
+		return NULL;
+
 	sub_obj->id = ++tm_sub->next_id;
 	sub_obj->object = object;
 

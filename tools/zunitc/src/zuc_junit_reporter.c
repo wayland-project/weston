@@ -446,9 +446,13 @@ zuc_junit_reporter_create(void)
 {
 	struct zuc_event_listener *listener =
 		zalloc(sizeof(struct zuc_event_listener));
+	if (!listener)
+		return NULL;
 
 	struct junit_data *data = zalloc(sizeof(struct junit_data));
-	data->fd = -1;
+	if (data) {
+		data->fd = -1;
+	}
 
 	listener->data = data;
 	listener->destroy = destroy;

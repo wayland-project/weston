@@ -111,6 +111,8 @@ zuc_base_logger_create(void)
 {
 	struct zuc_event_listener *listener =
 		zalloc(sizeof(struct zuc_event_listener));
+	if (!listener)
+		return NULL;
 
 	listener->data = zalloc(sizeof(struct base_data));
 	listener->destroy = destroy;
